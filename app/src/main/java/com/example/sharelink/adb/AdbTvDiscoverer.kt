@@ -12,7 +12,8 @@ import kotlinx.coroutines.flow.update
 
 /**
  * Handles mDNS discovery of ADB over TCP devices (Android TVs) on the local network.
- * Uses Android's native NsdManager and WifiManager.MulticastLock.
+ * Supports both _adb._tcp (native ADB discovery) and _googlecast._tcp (Chromecast/Google Cast discovery)
+ * to ensure maximum compatibility and retrieve user-friendly TV names.
  */
 @Suppress("DEPRECATION")
 class AdbTvDiscoverer(context: Context) {
@@ -20,7 +21,8 @@ class AdbTvDiscoverer(context: Context) {
     data class DiscoveredDevice(
         val name: String,
         val host: String,
-        val port: Int
+        val port: Int,
+        val serviceName: String
     )
 
     private val appContext = context.applicationContext
@@ -28,7 +30,8 @@ class AdbTvDiscoverer(context: Context) {
     private val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
     private var multicastLock: WifiManager.MulticastLock? = null
-    private var discoveryListener: NsdManager.DiscoveryListener? = null
+    private var adbDiscoveryListener: NsdManager.DiscoveryListener? = null
+    private var castDiscoveryListener: NsdManager.DiscoveryListener? = null
 
     private val _discoveredDevices = MutableStateFlow<List<DiscoveredDevice>>(emptyList())
     val discoveredDevices: StateFlow<List<DiscoveredDevice>> = _discoveredDevices.asStateFlow()
@@ -42,7 +45,7 @@ class AdbTvDiscoverer(context: Context) {
 
         _discoveredDevices.value = emptyList()
 
-        // Acquire multicast lock to receive multicast packets on Wi-Fi
+        // Acquire multicast lock to receive multicast/mDNS packets on Wi-Fi
         runCatching {
             multicastLock = wifiManager.createMulticastLock("AdbDiscoveryLock").apply {
                 setReferenceCounted(false)
@@ -50,83 +53,59 @@ class AdbTvDiscoverer(context: Context) {
             }
         }.onFailure { Log.e("AdbTvDiscoverer", "Failed to acquire multicast lock", it) }
 
-        discoveryListener = object : NsdManager.DiscoveryListener {
-            override fun onStartDiscoveryFailed(serviceType: String, errorCode: Int) {
-                Log.e("AdbTvDiscoverer", "Discovery start failed: $errorCode")
-                stopDiscovery()
-            }
+        _isScanning.value = true
 
-            override fun onStopDiscoveryFailed(serviceType: String, errorCode: Int) {
-                Log.e("AdbTvDiscoverer", "Discovery stop failed: $errorCode")
-            }
+        // 1. Setup ADB Service discovery listener
+        adbDiscoveryListener = createDiscoveryListener(
+            serviceType = "_adb._tcp",
+            defaultPort = null // Use resolved port
+        )
 
-            override fun onDiscoveryStarted(serviceType: String) {
-                Log.d("AdbTvDiscoverer", "Discovery started: $serviceType")
-                _isScanning.value = true
-            }
+        // 2. Setup Google Cast Service discovery listener
+        castDiscoveryListener = createDiscoveryListener(
+            serviceType = "_googlecast._tcp",
+            defaultPort = AdbTvClient.DEFAULT_PORT // Override to standard ADB port 5555
+        )
 
-            override fun onDiscoveryStopped(serviceType: String) {
-                Log.d("AdbTvDiscoverer", "Discovery stopped: $serviceType")
-                _isScanning.value = false
-            }
-
-            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
-                Log.d("AdbTvDiscoverer", "Service found: ${serviceInfo.serviceName}")
-                nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
-                    override fun onResolveFailed(serviceInfo: NsdServiceInfo, errorCode: Int) {
-                        Log.e("AdbTvDiscoverer", "Resolve failed: $errorCode")
-                    }
-
-                    override fun onServiceResolved(resolvedServiceInfo: NsdServiceInfo) {
-                        val hostAddress = resolvedServiceInfo.host.hostAddress ?: return
-                        val port = resolvedServiceInfo.port
-                        val name = resolvedServiceInfo.serviceName
-
-                        // Filter out loopback
-                        if (hostAddress.isBlank() || hostAddress == "127.0.0.1" || hostAddress == "::1") return
-
-                        // Update list on UI thread or atomic updates
-                        _discoveredDevices.update { list ->
-                            val current = list.filter { it.host != hostAddress }
-                            current + DiscoveredDevice(
-                                name = cleanDeviceName(name),
-                                host = hostAddress,
-                                port = port
-                            )
-                        }
-                    }
-                })
-            }
-
-            override fun onServiceLost(serviceInfo: NsdServiceInfo) {
-                Log.d("AdbTvDiscoverer", "Service lost: ${serviceInfo.serviceName}")
-                _discoveredDevices.update { list ->
-                    list.filter { it.name != cleanDeviceName(serviceInfo.serviceName) }
-                }
-            }
+        try {
+            nsdManager.discoverServices("_adb._tcp", NsdManager.PROTOCOL_DNS_SD, adbDiscoveryListener)
+        } catch (e: Exception) {
+            Log.e("AdbTvDiscoverer", "Failed to start ADB service discovery", e)
+            adbDiscoveryListener = null
         }
 
         try {
-            // Note: service type suffix '.' is optional but standard adb uses "_adb._tcp"
-            nsdManager.discoverServices("_adb._tcp", NsdManager.PROTOCOL_DNS_SD, discoveryListener)
+            nsdManager.discoverServices("_googlecast._tcp", NsdManager.PROTOCOL_DNS_SD, castDiscoveryListener)
         } catch (e: Exception) {
-            Log.e("AdbTvDiscoverer", "discoverServices failed", e)
+            Log.e("AdbTvDiscoverer", "Failed to start Cast service discovery", e)
+            castDiscoveryListener = null
+        }
+
+        if (adbDiscoveryListener == null && castDiscoveryListener == null) {
             _isScanning.value = false
+            stopDiscovery()
         }
     }
 
     @Synchronized
     fun stopDiscovery() {
-        if (!_isScanning.value) return
-
-        discoveryListener?.let {
+        adbDiscoveryListener?.let {
             try {
                 nsdManager.stopServiceDiscovery(it)
             } catch (e: Exception) {
-                Log.e("AdbTvDiscoverer", "stopServiceDiscovery failed", e)
+                Log.e("AdbTvDiscoverer", "Failed to stop ADB service discovery", e)
             }
         }
-        discoveryListener = null
+        adbDiscoveryListener = null
+
+        castDiscoveryListener?.let {
+            try {
+                nsdManager.stopServiceDiscovery(it)
+            } catch (e: Exception) {
+                Log.e("AdbTvDiscoverer", "Failed to stop Cast service discovery", e)
+            }
+        }
+        castDiscoveryListener = null
 
         multicastLock?.let {
             try {
@@ -137,6 +116,89 @@ class AdbTvDiscoverer(context: Context) {
         }
         multicastLock = null
         _isScanning.value = false
+    }
+
+    private fun createDiscoveryListener(
+        serviceType: String,
+        defaultPort: Int?
+    ): NsdManager.DiscoveryListener {
+        return object : NsdManager.DiscoveryListener {
+            override fun onStartDiscoveryFailed(type: String, errorCode: Int) {
+                Log.e("AdbTvDiscoverer", "Discovery start failed for $type: $errorCode")
+            }
+
+            override fun onStopDiscoveryFailed(type: String, errorCode: Int) {
+                Log.e("AdbTvDiscoverer", "Discovery stop failed for $type: $errorCode")
+            }
+
+            override fun onDiscoveryStarted(type: String) {
+                Log.d("AdbTvDiscoverer", "Discovery started for $type")
+            }
+
+            override fun onDiscoveryStopped(type: String) {
+                Log.d("AdbTvDiscoverer", "Discovery stopped for $type")
+            }
+
+            override fun onServiceFound(serviceInfo: NsdServiceInfo) {
+                Log.d("AdbTvDiscoverer", "Service found on $serviceType: ${serviceInfo.serviceName}")
+                nsdManager.resolveService(serviceInfo, object : NsdManager.ResolveListener {
+                    override fun onResolveFailed(resolvedInfo: NsdServiceInfo, errorCode: Int) {
+                        Log.e("AdbTvDiscoverer", "Resolve failed for $serviceType: $errorCode")
+                    }
+
+                    override fun onServiceResolved(resolvedServiceInfo: NsdServiceInfo) {
+                        val hostAddress = resolvedServiceInfo.host.hostAddress ?: return
+                        val name = resolvedServiceInfo.serviceName
+
+                        // Filter out loopback
+                        if (hostAddress.isBlank() || hostAddress == "127.0.0.1" || hostAddress == "::1") return
+
+                        // Determine target port (use provided override or resolved port)
+                        val port = defaultPort ?: resolvedServiceInfo.port
+
+                        // Parse friendly name from TXT attributes if available (e.g. fn="Living Room TV")
+                        val attributes = resolvedServiceInfo.attributes
+                        val fnBytes = attributes["fn"]
+                        val mdBytes = attributes["md"]
+                        val friendlyName = when {
+                            fnBytes != null -> String(fnBytes)
+                            mdBytes != null -> String(mdBytes)
+                            else -> cleanDeviceName(name)
+                        }
+
+                        // Update lists and merge duplicates by host/IP address
+                        _discoveredDevices.update { list ->
+                            val existingIndex = list.indexOfFirst { it.host == hostAddress }
+                            if (existingIndex >= 0) {
+                                val existing = list[existingIndex]
+                                // Keep the friendlier name (without adb- serial prefix) if one is found
+                                val bestName = if (existing.name.startsWith("adb-") && !friendlyName.startsWith("adb-")) {
+                                    friendlyName
+                                } else {
+                                    existing.name
+                                }
+                                val updated = existing.copy(name = bestName, port = port, serviceName = name)
+                                list.mapIndexed { idx, item -> if (idx == existingIndex) updated else item }
+                            } else {
+                                list + DiscoveredDevice(
+                                    name = friendlyName,
+                                    host = hostAddress,
+                                    port = port,
+                                    serviceName = name
+                                )
+                            }
+                        }
+                    }
+                })
+            }
+
+            override fun onServiceLost(serviceInfo: NsdServiceInfo) {
+                Log.d("AdbTvDiscoverer", "Service lost on $serviceType: ${serviceInfo.serviceName}")
+                _discoveredDevices.update { list ->
+                    list.filter { it.serviceName != serviceInfo.serviceName }
+                }
+            }
+        }
     }
 
     private fun cleanDeviceName(rawName: String): String {
