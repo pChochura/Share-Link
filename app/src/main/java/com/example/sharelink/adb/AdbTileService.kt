@@ -3,6 +3,7 @@ package com.example.sharelink.adb
 import android.app.PendingIntent
 import android.content.Intent
 import android.os.Build
+import android.service.quicksettings.Tile
 import android.service.quicksettings.TileService
 import com.example.sharelink.MainActivity
 
@@ -12,8 +13,16 @@ import com.example.sharelink.MainActivity
  */
 class AdbTileService : TileService() {
 
+    override fun onStartListening() {
+        super.onStartListening()
+        updateTileState()
+    }
+
     override fun onClick() {
         super.onClick()
+
+        // Keep it stateless
+        updateTileState()
 
         val intent = Intent(this, MainActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
@@ -33,5 +42,11 @@ class AdbTileService : TileService() {
             @Suppress("DEPRECATION")
             startActivityAndCollapse(intent)
         }
+    }
+
+    private fun updateTileState() {
+        val tile = qsTile ?: return
+        tile.state = Tile.STATE_INACTIVE
+        tile.updateTile()
     }
 }

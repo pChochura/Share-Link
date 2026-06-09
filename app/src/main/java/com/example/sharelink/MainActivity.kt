@@ -12,6 +12,7 @@ import androidx.compose.ui.Modifier
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.example.sharelink.adb.AdbTvClient
 import com.example.sharelink.adb.AdbTvDiscoverer
 import com.example.sharelink.data.TvSettingsRepository
@@ -24,6 +25,7 @@ class MainActivity : ComponentActivity() {
     private lateinit var viewModel: ShareLinkViewModel
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        installSplashScreen()
         super.onCreate(savedInstanceState)
 
         val factory = viewModelFactory {

@@ -3,6 +3,12 @@
 
     <style name="Theme.ShareLink" parent="android:Theme.Material.Light.NoActionBar" />
 
+    <style name="Theme.ShareLink.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">#0D1117</item>
+        <item name="windowSplashScreenAnimatedIcon">@drawable/ic_launcher_foreground</item>
+        <item name="postSplashScreenTheme">@style/Theme.ShareLink</item>
+    </style>
+
     <style name="Theme.ShareLink.Transparent" parent="Theme.ShareLink">
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowContentOverlay">@null</item>
