@@ -6,6 +6,7 @@ import com.example.sharelink.adb.AdbTvClient
 import com.example.sharelink.adb.AdbTvDiscoverer
 import com.example.sharelink.data.TvConfig
 import com.example.sharelink.data.TvSettingsRepository
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -73,7 +74,9 @@ class ShareLinkViewModel(
     val isScanning: StateFlow<Boolean> = adbDiscoverer.isScanning
 
     init {
-        startScanning()
+        viewModelScope.launch(Dispatchers.Default) {
+            startScanning()
+        }
     }
 
     fun startScanning() {
