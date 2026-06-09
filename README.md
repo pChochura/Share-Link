@@ -20,7 +20,7 @@
 
 ## 🚀 Key Features
 
-* 🔍 **Local TV Auto-Discovery (mDNS)**: Automatically scans the local Wi-Fi network for active ADB (`_adb._tcp`) and Google Cast (`_googlecast._tcp`) TV services using native Android `NsdManager` with a multicast lock to bypass driver-level filtering.
+* 🔍 **Local TV Auto-Discovery (mDNS)**: Scan your local network on-demand for active ADB (`_adb._tcp`) and Google Cast (`_googlecast._tcp`) TV services using native Android `NsdManager`. Scan operations are entirely manual (Start/Stop buttons) to completely eliminate background startup scanning overhead and guarantee instant, lightweight cold starts.
 * 🚀 **Stateless Quick Settings Tile**: The app has **no home screen launcher icon**. It is launched directly from a dedicated notification bar Quick Settings tile, keeping your phone's app drawer clean.
 * 📦 **Direct APK Streaming Installer**: Streams APK packages directly over the ADB socket using `dadb.install()`, completely bypassing TV storage restrictions and avoiding Android system server SELinux read-context errors.
 * 📂 **Binary File Sharing**: Casts images, videos, audio tracks, and PDF documents to the TV's `/sdcard/Download` folder and automatically fires the corresponding view intent on the TV screen.
@@ -48,15 +48,23 @@ To allow your phone to communicate with your TV, you must enable network debuggi
 
 ## 📱 How to Use the App
 
-### 1. Adding the Quick Settings Shortcut
-Because the app hides its icon from the launcher, you launch the configuration screen via the Android notification drawer:
+### 1. Opening the App & Quick Settings Shortcut
+Because the app hides its launcher icon to keep your app drawer completely clean, there are two ways to open the configuration dashboard:
+
+#### Option A: Quick Settings Tile (Recommended)
 1. Swipe down twice from the top of your screen to expand the full Quick Settings panel.
 2. Tap the **Edit (pencil)** icon.
 3. Scroll down, locate the **Share Link to TV** tile, and drag it into your active settings tray.
 4. Tap the tile to launch the main dashboard.
 
+#### Option B: System Settings (App Info)
+1. Open your device's system **Settings**.
+2. Navigate to **Apps** (or **Apps & notifications**).
+3. Search for or select **Share Link to TV**.
+4. Tap **Open** at the top of the App Info page.
+
 ### 2. Pairing & Saving Devices
-1. When you open the dashboard, it starts scanning your Wi-Fi network. Discovered TVs will appear in the **Discovered on Wi-Fi** section.
+1. When you open the dashboard, tap the **Play (Scan)** button next to the **Discovered on Wi-Fi** section header to begin scanning your Wi-Fi network. Discovered TVs will appear in the list. Tap **Stop** at any time to pause scanning and conserve battery.
 2. Tap **Save** next to a discovered TV. The input form will pre-fill with its host and port.
 3. Choose a custom name (e.g. *"Living Room TV"*) and click **Save TV**.
 4. Tap **Test** on your saved TV card. A prompt will appear on your TV screen asking to allow USB/Network Debugging. Check **"Always allow from this computer"** and select **OK**.
