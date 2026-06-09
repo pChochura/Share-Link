@@ -40,7 +40,9 @@ import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.Router
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Save
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.Button
@@ -168,6 +170,13 @@ fun MainScreen(
                 discoveredDevices = discoveredDevices,
                 isScanning = isScanning,
                 onAddDiscoveredTv = { viewModel.prepareDiscoveredTvForSave(it) },
+                onToggleScanning = {
+                    if (isScanning) {
+                        viewModel.stopScanning()
+                    } else {
+                        viewModel.startScanning()
+                    }
+                }
             )
 
             // History Card
@@ -811,6 +820,7 @@ private fun DiscoveredTvsCard(
     discoveredDevices: List<AdbTvDiscoverer.DiscoveredDevice>,
     isScanning: Boolean,
     onAddDiscoveredTv: (AdbTvDiscoverer.DiscoveredDevice) -> Unit,
+    onToggleScanning: () -> Unit,
 ) {
     GlowCard {
         Column(
@@ -823,12 +833,40 @@ private fun DiscoveredTvsCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 SectionHeader(icon = Icons.Filled.Wifi, title = "Discovered on Wi-Fi")
-                if (isScanning) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = CyanPrimary,
-                    )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    if (isScanning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = CyanPrimary,
+                        )
+                        IconButton(
+                            onClick = onToggleScanning,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Stop,
+                                contentDescription = "Stop Scanning",
+                                tint = ErrorRed,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    } else {
+                        IconButton(
+                            onClick = onToggleScanning,
+                            modifier = Modifier.size(28.dp)
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.PlayArrow,
+                                contentDescription = "Start Scanning",
+                                tint = CyanPrimary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
                 }
             }
 

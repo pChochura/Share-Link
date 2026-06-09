@@ -74,9 +74,7 @@ class ShareLinkViewModel(
     val isScanning: StateFlow<Boolean> = adbDiscoverer.isScanning
 
     init {
-        viewModelScope.launch(Dispatchers.Default) {
-            startScanning()
-        }
+        // Disabled by default to optimize cold start and save resources. User can toggle scanning manually.
     }
 
     fun startScanning() {
