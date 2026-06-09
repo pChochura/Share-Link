@@ -4,7 +4,12 @@ import dadb.AdbKeyPair
 import dadb.Dadb
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okio.Buffer
+import okio.Source
+import okio.Timeout
+import okio.source
 import java.io.File
+import java.io.IOException
 
 /**
  * Client that connects to an Android TV over ADB (TCP) and sends commands.
@@ -93,6 +98,7 @@ class AdbTvClient(private val filesDir: File) {
      * @param localFile The local file on the phone to push
      * @param remoteFileName The name of the file on the TV
      * @param mimeType Optional MIME type of the file
+     * @param onProgress Callback receiving progress values from 0.0 to 1.0
      * @return Result containing shell command execution output or error
      */
     suspend fun pushFileAndOpen(
@@ -100,7 +106,8 @@ class AdbTvClient(private val filesDir: File) {
         port: Int = DEFAULT_PORT,
         localFile: File,
         remoteFileName: String,
-        mimeType: String?
+        mimeType: String?,
+        onProgress: ((Float) -> Unit)? = null
     ): Result<String> = withContext(Dispatchers.IO) {
         runCatching {
             val keyPair = getOrCreateKeyPair()
@@ -110,13 +117,31 @@ class AdbTvClient(private val filesDir: File) {
 
                 if (isApk) {
                     // Stream APK bytes directly via dadb streaming installation to bypass TV package manager read permission limits
-                    dadb.install(localFile)
+                    val totalBytes = localFile.length()
+                    val fileSource = localFile.source()
+                    try {
+                        val progressSource = ProgressSource(fileSource, totalBytes) { progress ->
+                            onProgress?.invoke(progress)
+                        }
+                        dadb.install(progressSource, totalBytes)
+                    } finally {
+                        fileSource.close()
+                    }
                     "APK installed successfully via streaming install"
                 } else {
                     val remotePath = "/sdcard/Download/$remoteFileName"
                     
                     // Push the file
-                    dadb.push(localFile, remotePath)
+                    val totalBytes = localFile.length()
+                    val fileSource = localFile.source()
+                    try {
+                        val progressSource = ProgressSource(fileSource, totalBytes) { progress ->
+                            onProgress?.invoke(progress)
+                        }
+                        dadb.push(progressSource, remotePath, 438, localFile.lastModified() / 1000)
+                    } finally {
+                        fileSource.close()
+                    }
                     
                     // Determine open command based on file type/extension
                     val command = if (!mimeType.isNullOrBlank()) {
@@ -140,4 +165,32 @@ class AdbTvClient(private val filesDir: File) {
     companion object {
         const val DEFAULT_PORT = 5555
     }
+}
+
+/**
+ * An okio Source wrapper that intercepts read operations and reports progress
+ * based on the number of bytes read relative to the total file size.
+ */
+private class ProgressSource(
+    private val delegate: Source,
+    private val totalBytes: Long,
+    private val onProgress: (Float) -> Unit
+) : Source {
+    private var bytesRead = 0L
+
+    @Throws(IOException::class)
+    override fun read(sink: Buffer, byteCount: Long): Long {
+        val read = delegate.read(sink, byteCount)
+        if (read != -1L) {
+            bytesRead += read
+            val progress = if (totalBytes > 0) bytesRead.toFloat() / totalBytes else 0f
+            onProgress(progress)
+        }
+        return read
+    }
+
+    override fun timeout(): Timeout = delegate.timeout()
+
+    @Throws(IOException::class)
+    override fun close() = delegate.close()
 }

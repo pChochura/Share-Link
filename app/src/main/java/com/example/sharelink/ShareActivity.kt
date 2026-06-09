@@ -33,6 +33,7 @@ import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -80,7 +81,7 @@ sealed interface ShareState {
     data class Error(val tv: TvConfig, val url: String, val message: String) : ShareState
     
     // File Sharing states
-    data class SendingFile(val tvName: String, val fileName: String, val progressMsg: String) : ShareState
+    data class SendingFile(val tvName: String, val fileName: String, val progressMsg: String, val progress: Float = -1f) : ShareState
     data class SelectTvForFile(val tvs: List<TvConfig>, val fileName: String, val fileSizeStr: String) : ShareState
     data class FileSuccess(val tvName: String, val fileName: String) : ShareState
     data class FileError(val tv: TvConfig, val uri: Uri, val fileName: String, val fileSizeStr: String, val message: String) : ShareState
@@ -252,10 +253,22 @@ class ShareActivity : ComponentActivity() {
                 return@launch
             }
 
-            onStateUpdate(ShareState.SendingFile(tv.name, fileName, "Pushing to TV ($fileSizeStr)…"))
+            onStateUpdate(ShareState.SendingFile(tv.name, fileName, "Pushing to TV ($fileSizeStr)…", -1f))
 
             val mimeType = intent.type
-            val result = adbClient.pushFileAndOpen(tv.host, tv.port, cacheFile, fileName, mimeType)
+            val result = adbClient.pushFileAndOpen(
+                host = tv.host,
+                port = tv.port,
+                localFile = cacheFile,
+                remoteFileName = fileName,
+                mimeType = mimeType,
+                onProgress = { progress ->
+                    val pct = (progress * 100).toInt()
+                    val isApk = fileName.endsWith(".apk", ignoreCase = true) || mimeType == "application/vnd.android.package-archive"
+                    val actionName = if (isApk) "Installing on TV" else "Pushing to TV"
+                    onStateUpdate(ShareState.SendingFile(tv.name, fileName, "$actionName: $pct% ($fileSizeStr)", progress))
+                }
+            )
 
             withContext(Dispatchers.IO) {
                 cacheFile.delete()
@@ -525,7 +538,26 @@ fun ShareFlowUi(
                         horizontalAlignment = Alignment.CenterHorizontally,
                         modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)
                     ) {
-                        CircularProgressIndicator(color = CyanPrimary)
+                        if (state.progress >= 0f) {
+                            LinearProgressIndicator(
+                                progress = { state.progress },
+                                color = CyanPrimary,
+                                trackColor = ElevatedSurface,
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(6.dp)
+                            )
+                            Spacer(Modifier.height(8.dp))
+                            val pct = (state.progress * 100).toInt()
+                            Text(
+                                text = "$pct%",
+                                color = CyanPrimary,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.bodyMedium
+                            )
+                        } else {
+                            CircularProgressIndicator(color = CyanPrimary)
+                        }
                         Spacer(Modifier.height(16.dp))
                         Text(
                             text = state.fileName,

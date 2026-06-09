@@ -22,8 +22,8 @@
 
 * 🔍 **Local TV Auto-Discovery (mDNS)**: Scan your local network on-demand for active ADB (`_adb._tcp`) and Google Cast (`_googlecast._tcp`) TV services using native Android `NsdManager`. Scan operations are entirely manual (Start/Stop buttons) to completely eliminate background startup scanning overhead and guarantee instant, lightweight cold starts.
 * 🚀 **Stateless Quick Settings Tile**: The app has **no home screen launcher icon**. It is launched directly from a dedicated notification bar Quick Settings tile, keeping your phone's app drawer clean.
-* 📦 **Direct APK Streaming Installer**: Streams APK packages directly over the ADB socket using `dadb.install()`, completely bypassing TV storage restrictions and avoiding Android system server SELinux read-context errors.
-* 📂 **Binary File Sharing**: Casts images, videos, audio tracks, and PDF documents to the TV's `/sdcard/Download` folder and automatically fires the corresponding view intent on the TV screen.
+* 📦 **Direct APK Streaming Installer**: Streams APK packages directly over the ADB socket using `dadb.install()` with a real-time progress bar, completely bypassing TV storage restrictions and avoiding Android system server SELinux read-context errors.
+* 📂 **Binary File Sharing**: Casts images, videos, audio tracks, and PDF documents to the TV's `/sdcard/Download` folder with a real-time progress bar, and automatically fires the corresponding view intent on the TV screen.
 * 🔗 **Smart Link Extraction**: Extracts and sanitizes clean URLs from messy share text (e.g. sharing from YouTube or Chrome containing titles and tracking strings).
 * 🔄 **Direct Background Sharing**:
   * If **1 TV** is saved: Sends URLs or files instantly in the background with a minimal translucent progress card.
