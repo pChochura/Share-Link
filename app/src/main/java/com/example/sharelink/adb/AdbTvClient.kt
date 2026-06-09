@@ -105,32 +105,34 @@ class AdbTvClient(private val filesDir: File) {
         runCatching {
             val keyPair = getOrCreateKeyPair()
             Dadb.create(host, port, keyPair).use { dadb ->
-                val remotePath = "/sdcard/Download/$remoteFileName"
-                
-                // Push the file
-                dadb.push(localFile, remotePath)
-                
-                // Determine open command based on file type/extension
-                val command = when {
-                    remoteFileName.endsWith(".apk", ignoreCase = true) || 
-                    mimeType == "application/vnd.android.package-archive" -> {
-                        "pm install -r \"$remotePath\""
-                    }
-                    !mimeType.isNullOrBlank() -> {
+                val isApk = remoteFileName.endsWith(".apk", ignoreCase = true) || 
+                            mimeType == "application/vnd.android.package-archive"
+
+                if (isApk) {
+                    // Stream APK bytes directly via dadb streaming installation to bypass TV package manager read permission limits
+                    dadb.install(localFile)
+                    "APK installed successfully via streaming install"
+                } else {
+                    val remotePath = "/sdcard/Download/$remoteFileName"
+                    
+                    // Push the file
+                    dadb.push(localFile, remotePath)
+                    
+                    // Determine open command based on file type/extension
+                    val command = if (!mimeType.isNullOrBlank()) {
                         "am start -a android.intent.action.VIEW -d \"file://$remotePath\" -t \"$mimeType\""
-                    }
-                    else -> {
+                    } else {
                         "am start -a android.intent.action.VIEW -d \"file://$remotePath\""
                     }
+                    
+                    // Execute command
+                    val response = dadb.shell(command)
+                    if (response.exitCode != 0) {
+                        error("File pushed, but failed to execute command (exit ${response.exitCode}): ${response.errorOutput}")
+                    }
+                    
+                    response.output
                 }
-                
-                // Execute command
-                val response = dadb.shell(command)
-                if (response.exitCode != 0) {
-                    error("File pushed, but failed to execute command (exit ${response.exitCode}): ${response.errorOutput}")
-                }
-                
-                response.output
             }
         }
     }
