@@ -1,7 +1,11 @@
 package com.example.sharelink
 
+import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -29,17 +33,14 @@ import androidx.compose.material.icons.filled.Tv
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -62,16 +63,27 @@ import com.example.sharelink.theme.ShareLinkTheme
 import com.example.sharelink.theme.SuccessGreen
 import com.example.sharelink.theme.TextPrimary
 import com.example.sharelink.theme.TextSecondary
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 sealed interface ShareState {
     object Checking : ShareState
+    
+    // URL Sharing states
     data class Sending(val tvName: String) : ShareState
     data class SelectTv(val tvs: List<TvConfig>, val url: String) : ShareState
     data class Success(val tvName: String) : ShareState
     data class Error(val tvName: String, val message: String) : ShareState
+    
+    // File Sharing states
+    data class SendingFile(val tvName: String, val fileName: String, val progressMsg: String) : ShareState
+    data class SelectTvForFile(val tvs: List<TvConfig>, val fileName: String, val fileSizeStr: String) : ShareState
+    data class FileSuccess(val tvName: String, val fileName: String) : ShareState
+    data class FileError(val tvName: String, val fileName: String, val message: String) : ShareState
 }
 
 class ShareActivity : ComponentActivity() {
@@ -94,7 +106,19 @@ class ShareActivity : ComponentActivity() {
                 ShareFlowUi(
                     state = shareState,
                     url = extractedUrl,
-                    onSelectTv = { tv -> sendLinkToTv(tv, extractedUrl) { shareState = it } },
+                    onSelectTv = { tv ->
+                        val currentState = shareState
+                        if (currentState is ShareState.SelectTvForFile) {
+                            val streamUri = getSharedStreamUri()
+                            if (streamUri != null) {
+                                sendFileToTv(tv, streamUri, currentState.fileName, currentState.fileSizeStr) { shareState = it }
+                            } else {
+                                shareState = ShareState.FileError(tv.name, currentState.fileName, "Could not resolve shared file stream.")
+                            }
+                        } else {
+                            sendLinkToTv(tv, extractedUrl) { shareState = it }
+                        }
+                    },
                     onCancel = {
                         sendJob?.cancel()
                         finish()
@@ -109,8 +133,45 @@ class ShareActivity : ComponentActivity() {
         }
     }
 
+    private fun getSharedStreamUri(): Uri? {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent?.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent?.getParcelableExtra(Intent.EXTRA_STREAM)
+        }
+    }
+
     private fun handleShareIntent(onStateUpdate: (ShareState, String) -> Unit) {
-        if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
+        val streamUri = getSharedStreamUri()
+
+        if (streamUri != null) {
+            // Handing file sharing
+            val (fileName, fileSize) = getFileInfo(streamUri)
+            val fileSizeStr = formatFileSize(fileSize)
+
+            lifecycleScope.launch {
+                val tvs = tvSettingsRepository.tvList.first()
+                when {
+                    tvs.isEmpty() -> {
+                        Toast.makeText(this@ShareActivity, "No TVs configured. Open app to add one.", Toast.LENGTH_LONG).show()
+                        val mainIntent = Intent(this@ShareActivity, MainActivity::class.java).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                        }
+                        startActivity(mainIntent)
+                        finish()
+                    }
+                    tvs.size == 1 -> {
+                        val tv = tvs.first()
+                        sendFileToTv(tv, streamUri, fileName, fileSizeStr) { state -> onStateUpdate(state, "") }
+                    }
+                    else -> {
+                        onStateUpdate(ShareState.SelectTvForFile(tvs, fileName, fileSizeStr), "")
+                    }
+                }
+            }
+        } else if (intent?.action == Intent.ACTION_SEND && intent.type == "text/plain") {
+            // Handling text/URL sharing
             val sharedText = intent.getStringExtra(Intent.EXTRA_TEXT)
             if (!sharedText.isNullOrBlank()) {
                 val url = extractUrl(sharedText) ?: sharedText
@@ -154,11 +215,106 @@ class ShareActivity : ComponentActivity() {
             val result = adbClient.openUrlOnTv(tv.host, tv.port, url)
             if (result.isSuccess) {
                 onStateUpdate(ShareState.Success(tv.name))
-                delay(1500) // Show success checkmark for 1.5 seconds
+                delay(1500)
                 finish()
             } else {
                 onStateUpdate(ShareState.Error(tv.name, result.exceptionOrNull()?.message ?: "Unknown error"))
             }
+        }
+    }
+
+    private fun sendFileToTv(
+        tv: TvConfig,
+        uri: Uri,
+        fileName: String,
+        fileSizeStr: String,
+        onStateUpdate: (ShareState) -> Unit
+    ) {
+        sendJob?.cancel()
+        sendJob = lifecycleScope.launch {
+            onStateUpdate(ShareState.SendingFile(tv.name, fileName, "Preparing file…"))
+
+            val cacheFile = withContext(Dispatchers.IO) {
+                copyUriToCache(uri, fileName)
+            }
+
+            if (cacheFile == null || !cacheFile.exists()) {
+                onStateUpdate(ShareState.FileError(tv.name, fileName, "Failed to read shared file from phone memory."))
+                return@launch
+            }
+
+            onStateUpdate(ShareState.SendingFile(tv.name, fileName, "Pushing to TV ($fileSizeStr)…"))
+
+            val mimeType = intent.type
+            val result = adbClient.pushFileAndOpen(tv.host, tv.port, cacheFile, fileName, mimeType)
+
+            withContext(Dispatchers.IO) {
+                cacheFile.delete()
+            }
+
+            if (result.isSuccess) {
+                onStateUpdate(ShareState.FileSuccess(tv.name, fileName))
+                delay(2000)
+                finish()
+            } else {
+                val errorMsg = result.exceptionOrNull()?.message ?: "Unknown error"
+                onStateUpdate(ShareState.FileError(tv.name, fileName, errorMsg))
+            }
+        }
+    }
+
+    private fun getFileInfo(uri: Uri): Pair<String, Long> {
+        var name = "shared_file"
+        var size = -1L
+        try {
+            if (uri.scheme == "content") {
+                contentResolver.query(uri, null, null, null, null)?.use { cursor ->
+                    if (cursor.moveToFirst()) {
+                        val nameIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (nameIndex != -1) {
+                            name = cursor.getString(nameIndex)
+                        }
+                        val sizeIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                        if (sizeIndex != -1) {
+                            size = cursor.getLong(sizeIndex)
+                        }
+                    }
+                }
+            } else if (uri.scheme == "file") {
+                val file = File(uri.path ?: "")
+                name = file.name
+                size = file.length()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return Pair(name, size)
+    }
+
+    private fun copyUriToCache(uri: Uri, fileName: String): File? {
+        return try {
+            val cacheFile = File(cacheDir, fileName)
+            cacheFile.delete()
+            contentResolver.openInputStream(uri)?.use { inputStream ->
+                cacheFile.outputStream().use { outputStream ->
+                    inputStream.copyTo(outputStream)
+                }
+            }
+            cacheFile
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
+    private fun formatFileSize(size: Long): String {
+        if (size <= 0) return "Unknown size"
+        val kb = size / 1024.0
+        val mb = kb / 1024.0
+        return if (mb >= 1.0) {
+            String.format(java.util.Locale.US, "%.1f MB", mb)
+        } else {
+            String.format(java.util.Locale.US, "%.1f KB", kb)
         }
     }
 
@@ -291,6 +447,215 @@ fun ShareFlowUi(
                                 .background(CardSurface, RoundedCornerShape(8.dp))
                                 .padding(horizontal = 12.dp, vertical = 8.dp)
                         )
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            text = "Select a target device:",
+                            color = TextSecondary,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.SemiBold
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        LazyColumn(
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.heightIn(max = 240.dp)
+                        ) {
+                            items(state.tvs) { tv ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(ElevatedSurface, RoundedCornerShape(12.dp))
+                                        .clickable { onSelectTv(tv) }
+                                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Icon(
+                                        Icons.Default.Tv,
+                                        contentDescription = null,
+                                        tint = CyanPrimary,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                    Spacer(Modifier.width(12.dp))
+                                    Column {
+                                        Text(
+                                            text = tv.name,
+                                            color = TextPrimary,
+                                            fontWeight = FontWeight.SemiBold,
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                        Text(
+                                            text = tv.host,
+                                            color = TextSecondary,
+                                            style = MaterialTheme.typography.bodySmall
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                },
+                onDismiss = onCancel
+            )
+        }
+        is ShareState.SendingFile -> {
+            ActionDialog(
+                title = "Sending File",
+                content = {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)
+                    ) {
+                        CircularProgressIndicator(color = CyanPrimary)
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            text = state.fileName,
+                            color = TextPrimary,
+                            fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text(
+                            text = state.progressMsg,
+                            color = TextSecondary,
+                            style = MaterialTheme.typography.bodySmall
+                        )
+                        Spacer(Modifier.height(24.dp))
+                    }
+                },
+                onDismiss = onCancel
+            )
+        }
+        is ShareState.FileSuccess -> {
+            ActionDialog(
+                title = "File Pushed!",
+                content = {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(100.dp),
+                            color = SuccessGreen.copy(alpha = 0.15f),
+                            modifier = Modifier.size(56.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text("✓", color = SuccessGreen, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.headlineMedium)
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        val isApk = state.fileName.endsWith(".apk", ignoreCase = true)
+                        Text(
+                            text = if (isApk) "Installed successfully on ${state.tvName}" else "Sent & opened on ${state.tvName}",
+                            color = SuccessGreen,
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = state.fileName,
+                            color = TextSecondary,
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                },
+                onDismiss = onCancel
+            )
+        }
+        is ShareState.FileError -> {
+            ActionDialog(
+                title = "Failed to Send",
+                content = {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                    ) {
+                        Surface(
+                            shape = RoundedCornerShape(100.dp),
+                            color = ErrorRed.copy(alpha = 0.15f),
+                            modifier = Modifier.size(56.dp)
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text("✕", color = ErrorRed, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.headlineMedium)
+                            }
+                        }
+                        Spacer(Modifier.height(16.dp))
+                        Text(
+                            text = "Error sending ${state.fileName}:",
+                            color = TextPrimary,
+                            fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.bodyMedium,
+                            textAlign = TextAlign.Center
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = state.message,
+                            color = ErrorRed,
+                            style = MaterialTheme.typography.bodySmall,
+                            textAlign = TextAlign.Center,
+                            maxLines = 4,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Spacer(Modifier.height(24.dp))
+                        Button(
+                            onClick = onCancel,
+                            colors = ButtonDefaults.buttonColors(containerColor = ElevatedSurface),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Close", color = TextPrimary)
+                        }
+                    }
+                },
+                onDismiss = onCancel
+            )
+        }
+        is ShareState.SelectTvForFile -> {
+            ActionDialog(
+                title = "Send File to TV",
+                content = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(CardSurface, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Surface(
+                                shape = RoundedCornerShape(8.dp),
+                                color = CyanPrimary.copy(alpha = 0.1f),
+                                modifier = Modifier.size(40.dp)
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Icon(
+                                        imageVector = Icons.Default.Tv,
+                                        contentDescription = null,
+                                        tint = CyanPrimary,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(16.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = state.fileName,
+                                    color = TextPrimary,
+                                    fontWeight = FontWeight.Bold,
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = state.fileSizeStr,
+                                    color = TextSecondary,
+                                    style = MaterialTheme.typography.bodySmall
+                                )
+                            }
+                        }
                         Spacer(Modifier.height(16.dp))
                         Text(
                             text = "Select a target device:",

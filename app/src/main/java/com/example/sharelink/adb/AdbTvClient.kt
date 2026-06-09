@@ -85,6 +85,56 @@ class AdbTvClient(private val filesDir: File) {
         }
     }
 
+    /**
+     * Pushes a local file to the TV and attempts to open or install it.
+     *
+     * @param host The TV's IP address
+     * @param port The ADB port (default 5555)
+     * @param localFile The local file on the phone to push
+     * @param remoteFileName The name of the file on the TV
+     * @param mimeType Optional MIME type of the file
+     * @return Result containing shell command execution output or error
+     */
+    suspend fun pushFileAndOpen(
+        host: String,
+        port: Int = DEFAULT_PORT,
+        localFile: File,
+        remoteFileName: String,
+        mimeType: String?
+    ): Result<String> = withContext(Dispatchers.IO) {
+        runCatching {
+            val keyPair = getOrCreateKeyPair()
+            Dadb.create(host, port, keyPair).use { dadb ->
+                val remotePath = "/sdcard/Download/$remoteFileName"
+                
+                // Push the file
+                dadb.push(localFile, remotePath)
+                
+                // Determine open command based on file type/extension
+                val command = when {
+                    remoteFileName.endsWith(".apk", ignoreCase = true) || 
+                    mimeType == "application/vnd.android.package-archive" -> {
+                        "pm install -r \"$remotePath\""
+                    }
+                    !mimeType.isNullOrBlank() -> {
+                        "am start -a android.intent.action.VIEW -d \"file://$remotePath\" -t \"$mimeType\""
+                    }
+                    else -> {
+                        "am start -a android.intent.action.VIEW -d \"file://$remotePath\""
+                    }
+                }
+                
+                // Execute command
+                val response = dadb.shell(command)
+                if (response.exitCode != 0) {
+                    error("File pushed, but failed to execute command (exit ${response.exitCode}): ${response.errorOutput}")
+                }
+                
+                response.output
+            }
+        }
+    }
+
     companion object {
         const val DEFAULT_PORT = 5555
     }
