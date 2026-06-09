@@ -77,13 +77,13 @@ sealed interface ShareState {
     data class Sending(val tvName: String) : ShareState
     data class SelectTv(val tvs: List<TvConfig>, val url: String) : ShareState
     data class Success(val tvName: String) : ShareState
-    data class Error(val tvName: String, val message: String) : ShareState
+    data class Error(val tv: TvConfig, val url: String, val message: String) : ShareState
     
     // File Sharing states
     data class SendingFile(val tvName: String, val fileName: String, val progressMsg: String) : ShareState
     data class SelectTvForFile(val tvs: List<TvConfig>, val fileName: String, val fileSizeStr: String) : ShareState
     data class FileSuccess(val tvName: String, val fileName: String) : ShareState
-    data class FileError(val tvName: String, val fileName: String, val message: String) : ShareState
+    data class FileError(val tv: TvConfig, val uri: Uri, val fileName: String, val fileSizeStr: String, val message: String) : ShareState
 }
 
 class ShareActivity : ComponentActivity() {
@@ -108,15 +108,24 @@ class ShareActivity : ComponentActivity() {
                     url = extractedUrl,
                     onSelectTv = { tv ->
                         val currentState = shareState
-                        if (currentState is ShareState.SelectTvForFile) {
-                            val streamUri = getSharedStreamUri()
-                            if (streamUri != null) {
-                                sendFileToTv(tv, streamUri, currentState.fileName, currentState.fileSizeStr) { shareState = it }
-                            } else {
-                                shareState = ShareState.FileError(tv.name, currentState.fileName, "Could not resolve shared file stream.")
+                        when (currentState) {
+                            is ShareState.SelectTvForFile -> {
+                                val streamUri = getSharedStreamUri()
+                                if (streamUri != null) {
+                                    sendFileToTv(tv, streamUri, currentState.fileName, currentState.fileSizeStr) { shareState = it }
+                                } else {
+                                    shareState = ShareState.FileError(tv, Uri.EMPTY, currentState.fileName, "0 B", "Could not resolve shared file stream.")
+                                }
                             }
-                        } else {
-                            sendLinkToTv(tv, extractedUrl) { shareState = it }
+                            is ShareState.FileError -> {
+                                sendFileToTv(tv, currentState.uri, currentState.fileName, currentState.fileSizeStr) { shareState = it }
+                            }
+                            is ShareState.Error -> {
+                                sendLinkToTv(tv, currentState.url) { shareState = it }
+                            }
+                            else -> {
+                                sendLinkToTv(tv, extractedUrl) { shareState = it }
+                            }
                         }
                     },
                     onCancel = {
@@ -218,7 +227,7 @@ class ShareActivity : ComponentActivity() {
                 delay(1500)
                 finish()
             } else {
-                onStateUpdate(ShareState.Error(tv.name, result.exceptionOrNull()?.message ?: "Unknown error"))
+                onStateUpdate(ShareState.Error(tv, url, result.exceptionOrNull()?.message ?: "Unknown error"))
             }
         }
     }
@@ -239,7 +248,7 @@ class ShareActivity : ComponentActivity() {
             }
 
             if (cacheFile == null || !cacheFile.exists()) {
-                onStateUpdate(ShareState.FileError(tv.name, fileName, "Failed to read shared file from phone memory."))
+                onStateUpdate(ShareState.FileError(tv, uri, fileName, fileSizeStr, "Failed to read shared file from phone memory."))
                 return@launch
             }
 
@@ -258,7 +267,7 @@ class ShareActivity : ComponentActivity() {
                 finish()
             } else {
                 val errorMsg = result.exceptionOrNull()?.message ?: "Unknown error"
-                onStateUpdate(ShareState.FileError(tv.name, fileName, errorMsg))
+                onStateUpdate(ShareState.FileError(tv, uri, fileName, fileSizeStr, errorMsg))
             }
         }
     }
@@ -404,7 +413,7 @@ fun ShareFlowUi(
                         }
                         Spacer(Modifier.height(16.dp))
                         Text(
-                            text = "Error on ${state.tvName}:",
+                            text = "Error on ${state.tv.name}:",
                             color = TextPrimary,
                             fontWeight = FontWeight.SemiBold,
                             style = MaterialTheme.typography.bodyMedium
@@ -419,12 +428,24 @@ fun ShareFlowUi(
                             overflow = TextOverflow.Ellipsis
                         )
                         Spacer(Modifier.height(24.dp))
-                        Button(
-                            onClick = onCancel,
-                            colors = ButtonDefaults.buttonColors(containerColor = ElevatedSurface),
-                            modifier = Modifier.fillMaxWidth()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Text("Close", color = TextPrimary)
+                            Button(
+                                onClick = onCancel,
+                                colors = ButtonDefaults.buttonColors(containerColor = ElevatedSurface),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Close", color = TextPrimary)
+                            }
+                            Button(
+                                onClick = { onSelectTv(state.tv) },
+                                colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Retry", color = DeepNavy, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 },
@@ -601,12 +622,24 @@ fun ShareFlowUi(
                             overflow = TextOverflow.Ellipsis
                         )
                         Spacer(Modifier.height(24.dp))
-                        Button(
-                            onClick = onCancel,
-                            colors = ButtonDefaults.buttonColors(containerColor = ElevatedSurface),
-                            modifier = Modifier.fillMaxWidth()
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            Text("Close", color = TextPrimary)
+                            Button(
+                                onClick = onCancel,
+                                colors = ButtonDefaults.buttonColors(containerColor = ElevatedSurface),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Close", color = TextPrimary)
+                            }
+                            Button(
+                                onClick = { onSelectTv(state.tv) },
+                                colors = ButtonDefaults.buttonColors(containerColor = CyanPrimary),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Text("Retry", color = DeepNavy, fontWeight = FontWeight.Bold)
+                            }
                         }
                     }
                 },
